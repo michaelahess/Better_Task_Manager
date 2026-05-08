@@ -1,7 +1,7 @@
 # Better Task Manager
 Faster, more focused, BETTER, management of Windows Tasks.
 
-An interactive, menu-driven Windows Task Scheduler manager for PowerShell 5.1+. Replaces clicking through the Task Scheduler GUI with a fast keyboard-driven terminal interface — list, search, create, edit, clone, export/import, and act on tasks without leaving the console.
+An interactive, menu-driven Windows Task Scheduler manager for PowerShell 5.1+. Replaces clicking through the Task Scheduler GUI with a fast keyboard-driven terminal interface — list, search, create, edit, clone, export/import, and act on tasks without leaving the console. Now with network support!
 
 > **Requires:** PowerShell 5.1+, Windows 8.1 / Server 2012 R2 or newer. Run as Administrator for full functionality.
 
@@ -46,6 +46,9 @@ This is an easier to use (in my opinion) way of doing task management.
   INSPECT
    [16] Run history
    [17] Run-as account audit
+
+  REMOTE
+   [18] Connect to remote machine
 
    [Q]  Quit
 ```
@@ -209,6 +212,71 @@ Option `[17]` lists every task alongside its run-as account, logon type, and run
   CORP\svc_reports    Password         Highest   Ready     WeeklyReportExport     \Corp\
   NETWORK SERVICE     ServiceAccount   Limited   Ready     CertRenewalCheck       \Corp\IT\
   SYSTEM              ServiceAccount   Highest   Ready     NightlyDBCleanup       \Corp\
+```
+
+---
+
+## Connect to Remote Machine
+
+Option `[18]` allows you to connect to a remote machine and perform all the same tasks on it.
+
+Enter a full FQDN or IP address to connect and either authenticate as current user, or use alternative credentials.
+
+```
+Remote Connection
+
+  Target machine (FQDN or IP address): testserver.domain.com
+  Use alternate credentials? [Y/N]: y
+  Username (DOMAIN\user or user@domain): domain\itsmemario
+  Password: ****************
+  Connecting to testserver.domain.com...
+  Connected to testserver.domain.com
+```
+The home page will now update:
+
+```
+Connected to: testserver.domain.com
+
+  LIST
+   [1]  Enabled tasks
+   [2]  Disabled tasks
+   [3]  Running tasks
+
+  MANAGE
+   [4]  Enable a task          [8]  Run a task now
+   [5]  Disable a task         [9]  Stop a running task
+   [6]  Bulk enable tasks      [10] Delete a task
+   [7]  Bulk disable tasks
+
+  CONFIGURE
+   [11] Create a task          [14] Export task to XML
+   [12] Edit a task            [15] Import task from XML
+   [13] Clone / copy a task
+
+  INSPECT
+   [16] Run history
+   [17] Run-as account audit
+
+  REMOTE
+   [18] Remote connection     (connected: testserver.domain.com)
+
+   [Q]  Quit
+
+  Choice [1-18 or Q]:
+```
+
+Now if you go back to option ```18```:
+
+```
+Connected to: testserver.domain.com
+
+  Remote Connection
+
+  Currently connected to: testserver.domain.com
+   [1] Connect to a different machine
+   [2] Disconnect (return to local)
+   [B] Back
+  Choice [1-2 or B]:
 ```
 
 ---
