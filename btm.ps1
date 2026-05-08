@@ -1,7 +1,7 @@
 #Requires -Modules ScheduledTasks
 <#
 .SYNOPSIS  Interactive Task Scheduler Manager
-.NOTES     Run as Administrator for full functionality. -- PowerShell 5.1+ -- Windows 8/2012+ --
+.NOTES     Run as Administrator for full functionality.  PowerShell 5.1+
 #>
 
 $ErrorActionPreference = 'Continue'
@@ -687,7 +687,7 @@ function New-TaskWizard {
         if ($pi.User)     { $reg.User     = $pi.User }
         if ($pi.Password) { $reg.Password = $pi.Password }
 
-        Register-ScheduledTask @reg | Out-Null
+        Register-ScheduledTask @reg -EA Stop | Out-Null
 
         if ($desc) {
             $svc = New-Object -ComObject 'Schedule.Service'
@@ -695,7 +695,11 @@ function New-TaskWizard {
             $fp  = if ($folder -eq '\') { '\' } else { $folder.TrimEnd('\') }
             $def = $svc.GetFolder($fp).GetTask($name).Definition
             $def.RegistrationInfo.Description = $desc
-            $svc.GetFolder($fp).RegisterTaskDefinition($name, $def, 4, $null, $null, $null) | Out-Null
+            # Pass credentials through — required when task runs as a stored-password user account
+            $descLogon = $def.Principal.LogonType
+            $descUser  = $def.Principal.UserId
+            $descPw    = if ($pi.Password) { $pi.Password } else { $null }
+            $svc.GetFolder($fp).RegisterTaskDefinition($name, $def, 4, $descUser, $descPw, $descLogon) | Out-Null
         }
 
         Write-Host "  Task '$name' created successfully!" -ForegroundColor Green
