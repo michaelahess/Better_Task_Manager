@@ -2,7 +2,9 @@
 <#
 .SYNOPSIS  Interactive Task Scheduler Manager
 .NOTES     Run as Administrator for full functionality.  PowerShell 5.1+
+           Remote usage: .\TaskSchedulerManager.ps1 -ComputerName server01.corp.com
 #>
+param([string]$ComputerName = '')
 
 $ErrorActionPreference = 'Continue'
 
@@ -13,6 +15,12 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
     Start-Sleep -Seconds 2
 }
 
+# Remote connection state — all cmdlets splat @script:CimArgs; empty = local
+$script:Target     = ''
+$script:Credential = $null
+$script:CimSession = $null
+$script:CimArgs    = @{}
+
 # ═══════════════════════════════════════════════════════════════════
 #  CORE HELPERS
 # ═══════════════════════════════════════════════════════════════════
@@ -22,6 +30,9 @@ function Write-Header ([string]$Sub = '') {
     Write-Host '  ╔═══════════════════════════════════════════════╗' -ForegroundColor Cyan
     Write-Host '  ║              Better Task Manager              ║' -ForegroundColor Cyan
     Write-Host '  ╚═══════════════════════════════════════════════╝' -ForegroundColor Cyan
+    if ($script:Target) {
+        Write-Host "  Connected to: $script:Target" -ForegroundColor Yellow
+    }
     if ($Sub) { Write-Host "`n  $Sub`n" -ForegroundColor Yellow }
     else      { Write-Host }
 }
@@ -31,6 +42,27 @@ function Pause-ForUser { Read-Host "`n  Press Enter to continue" | Out-Null }
 function Read-Valid ([string]$Prompt, [string[]]$Valid) {
     do { $v = (Read-Host "  $Prompt").Trim() } while ($v -notin $Valid)
     return $v
+}
+
+function New-ComService {
+    # Returns a connected Schedule.Service COM object (local or remote).
+    $svc = New-Object -ComObject 'Schedule.Service'
+    if ($script:Target) {
+        if ($script:Credential) {
+            $rawUser = $script:Credential.UserName
+            $domain  = ''
+            $user    = $rawUser
+            if ($rawUser -match '^([^@\\]+)\\(.+)$') { $domain = $Matches[1]; $user = $Matches[2] }
+            $pw = [Runtime.InteropServices.Marshal]::PtrToStringBSTR(
+                      [Runtime.InteropServices.Marshal]::SecureStringToBSTR($script:Credential.Password))
+            $svc.Connect($script:Target, $user, $domain, $pw)
+        } else {
+            $svc.Connect($script:Target)
+        }
+    } else {
+        $svc.Connect()
+    }
+    return $svc
 }
 
 function Show-Paged {
@@ -114,7 +146,6 @@ function Show-TaskListPaged {
         if ($up -eq 'P' -and $page -gt 0)          { $page--; continue }
         if ($up -eq 'B') { return }
 
-        # Accept "<number>" or "<number><letter>" (with optional space)
         if ($raw -match '^(\d+)\s*([A-Za-z]?)$') {
             $n          = [int]$Matches[1]
             $actionChar = $Matches[2].ToUpper()
@@ -143,7 +174,7 @@ function Invoke-QuickAction {
         'N' {
             Write-Host "`n  Enable: $fullName" -ForegroundColor Yellow
             if ((Read-Valid 'Enable this task? [Y/N]' @('Y','y','N','n')) -in 'Y','y') {
-                try { Enable-ScheduledTask -TaskName $Task.TaskName -TaskPath $Task.TaskPath | Out-Null
+                try { Enable-ScheduledTask -TaskName $Task.TaskName -TaskPath $Task.TaskPath @script:CimArgs | Out-Null
                       Write-Host '  Task enabled.' -ForegroundColor Green }
                 catch { Write-Host "  Error: $_" -ForegroundColor Red }
             } else { Write-Host '  Cancelled.' -ForegroundColor Gray }
@@ -152,7 +183,7 @@ function Invoke-QuickAction {
         'D' {
             Write-Host "`n  Disable: $fullName" -ForegroundColor Yellow
             if ((Read-Valid 'Disable this task? [Y/N]' @('Y','y','N','n')) -in 'Y','y') {
-                try { Disable-ScheduledTask -TaskName $Task.TaskName -TaskPath $Task.TaskPath | Out-Null
+                try { Disable-ScheduledTask -TaskName $Task.TaskName -TaskPath $Task.TaskPath @script:CimArgs | Out-Null
                       Write-Host '  Task disabled.' -ForegroundColor Green }
                 catch { Write-Host "  Error: $_" -ForegroundColor Red }
             } else { Write-Host '  Cancelled.' -ForegroundColor Gray }
@@ -161,7 +192,7 @@ function Invoke-QuickAction {
         'R' {
             Write-Host "`n  Run now: $fullName" -ForegroundColor Yellow
             if ((Read-Valid 'Run this task now? [Y/N]' @('Y','y','N','n')) -in 'Y','y') {
-                try { Start-ScheduledTask -TaskName $Task.TaskName -TaskPath $Task.TaskPath
+                try { Start-ScheduledTask -TaskName $Task.TaskName -TaskPath $Task.TaskPath @script:CimArgs
                       Write-Host '  Task started.' -ForegroundColor Green }
                 catch { Write-Host "  Error: $_" -ForegroundColor Red }
             } else { Write-Host '  Cancelled.' -ForegroundColor Gray }
@@ -170,7 +201,7 @@ function Invoke-QuickAction {
         'S' {
             Write-Host "`n  Stop: $fullName" -ForegroundColor Yellow
             if ((Read-Valid 'Stop this task? [Y/N]' @('Y','y','N','n')) -in 'Y','y') {
-                try { Stop-ScheduledTask -TaskName $Task.TaskName -TaskPath $Task.TaskPath
+                try { Stop-ScheduledTask -TaskName $Task.TaskName -TaskPath $Task.TaskPath @script:CimArgs
                       Write-Host '  Task stopped.' -ForegroundColor Green }
                 catch { Write-Host "  Error: $_" -ForegroundColor Red }
             } else { Write-Host '  Cancelled.' -ForegroundColor Gray }
@@ -181,7 +212,7 @@ function Invoke-QuickAction {
             Write-Host '  WARNING: This cannot be undone.' -ForegroundColor Red
             Write-Host '  Type  DELETE  to confirm (anything else = cancel):'
             if ((Read-Host '  >').Trim() -ceq 'DELETE') {
-                try { Unregister-ScheduledTask -TaskName $Task.TaskName -TaskPath $Task.TaskPath -Confirm:$false
+                try { Unregister-ScheduledTask -TaskName $Task.TaskName -TaskPath $Task.TaskPath -Confirm:$false @script:CimArgs
                       Write-Host '  Task deleted.' -ForegroundColor Green }
                 catch { Write-Host "  Error: $_" -ForegroundColor Red }
             } else { Write-Host '  Cancelled.' -ForegroundColor Gray }
@@ -224,7 +255,7 @@ function Show-TaskDetail {
     }
 
     try {
-        $info = Get-ScheduledTaskInfo -TaskName $Task.TaskName -TaskPath $Task.TaskPath -EA Stop
+        $info = Get-ScheduledTaskInfo -TaskName $Task.TaskName -TaskPath $Task.TaskPath @script:CimArgs -EA Stop
         Write-Host "`n  Last Run    : $(if ($info.LastRunTime -gt [DateTime]::MinValue) { $info.LastRunTime.ToString('yyyy-MM-dd HH:mm:ss') } else { 'Never' })"
         Write-Host "  Next Run    : $(if ($info.NextRunTime -gt [DateTime]::MinValue) { $info.NextRunTime.ToString('yyyy-MM-dd HH:mm:ss') } else { 'N/A' })"
         $rc    = [uint32]$info.LastTaskResult
@@ -254,15 +285,15 @@ function Get-TaskRows {
 
     $result = foreach ($t in $Tasks) {
         if ($WithInfo) {
-            try   { $i = Get-ScheduledTaskInfo -TaskName $t.TaskName -TaskPath $t.TaskPath -EA Stop }
+            try   { $i = Get-ScheduledTaskInfo -TaskName $t.TaskName -TaskPath $t.TaskPath @script:CimArgs -EA Stop }
             catch { $i = $null }
 
             [PSCustomObject]@{
-                Name       = $t.TaskName
-                Folder     = $t.TaskPath
-                State      = $t.State
-                'Last Run'  = if ($i -and $i.LastRunTime  -gt [DateTime]::MinValue) { $i.LastRunTime.ToString('yyyy-MM-dd HH:mm')  } else { 'Never' }
-                'Next Run'  = if ($i -and $i.NextRunTime  -gt [DateTime]::MinValue) { $i.NextRunTime.ToString('yyyy-MM-dd HH:mm')  } else { 'N/A'   }
+                Name        = $t.TaskName
+                Folder      = $t.TaskPath
+                State       = $t.State
+                'Last Run'  = if ($i -and $i.LastRunTime -gt [DateTime]::MinValue) { $i.LastRunTime.ToString('yyyy-MM-dd HH:mm')  } else { 'Never' }
+                'Next Run'  = if ($i -and $i.NextRunTime -gt [DateTime]::MinValue) { $i.NextRunTime.ToString('yyyy-MM-dd HH:mm')  } else { 'N/A'   }
                 'Exit Code' = if ($i) { '0x{0:X8}' -f [uint32]$i.LastTaskResult } else { 'N/A' }
             }
         } else {
@@ -277,7 +308,7 @@ function Select-Task ([string]$Verb = 'select') {
         $kw = (Read-Host '  Filter keyword (blank = show all)').Trim()
         Write-Host '  Searching...' -ForegroundColor DarkGray
 
-        $found = @(Get-ScheduledTask -EA SilentlyContinue | Where-Object {
+        $found = @(Get-ScheduledTask @script:CimArgs -EA SilentlyContinue | Where-Object {
             !$kw -or $_.TaskName -like "*$kw*" -or $_.TaskPath -like "*$kw*"
         })
 
@@ -322,6 +353,76 @@ function Format-TriggerSummary ([object]$Trigger) {
         '*Event*'   { "On Event" }
         default     { $cn -replace 'MSFT_Task', '' }
     }
+}
+
+# ═══════════════════════════════════════════════════════════════════
+#  REMOTE CONNECTION
+# ═══════════════════════════════════════════════════════════════════
+
+function Connect-RemoteMachine {
+    Write-Header 'Remote Connection'
+
+    if ($script:CimSession) {
+        Write-Host "  Currently connected to: $script:Target" -ForegroundColor Yellow
+        Write-Host '   [1] Connect to a different machine'
+        Write-Host '   [2] Disconnect (return to local)'
+        Write-Host '   [B] Back'
+        $c = Read-Valid 'Choice [1-2 or B]' @('1','2','B','b')
+        if ($c -in 'B','b') { return }
+        if ($c -eq '2') { Disconnect-RemoteMachine; return }
+    }
+
+    $target = (Read-Host "`n  Target machine (FQDN or IP address)").Trim()
+    if (!$target -or $target -in 'B','b') {
+        Write-Host '  Cancelled.' -ForegroundColor Gray; Pause-ForUser; return
+    }
+
+    $useCreds = (Read-Valid 'Use alternate credentials? [Y/N]' @('Y','y','N','n')) -in 'Y','y'
+    $cred = $null
+    if ($useCreds) {
+        $credUser = (Read-Host '  Username (DOMAIN\user or user@domain)').Trim()
+        $credPw   = Read-Host '  Password' -AsSecureString
+        $cred     = New-Object System.Management.Automation.PSCredential($credUser, $credPw)
+    }
+
+    Write-Host "  Connecting to $target..." -ForegroundColor DarkGray
+
+    try {
+        $sessionParams = @{ ComputerName = $target; ErrorAction = 'Stop' }
+        if ($cred) { $sessionParams.Credential = $cred }
+
+        $session = $null
+        try {
+            $sessionParams.SessionOption = New-CimSessionOption -Protocol Wsman
+            $session = New-CimSession @sessionParams
+        } catch {
+            Write-Host '  WsMan/WinRM failed, trying DCOM...' -ForegroundColor DarkGray
+            $sessionParams.SessionOption = New-CimSessionOption -Protocol Dcom
+            $session = New-CimSession @sessionParams
+        }
+
+        if ($script:CimSession) { Remove-CimSession $script:CimSession -EA SilentlyContinue }
+
+        $script:Target     = $target
+        $script:Credential = $cred
+        $script:CimSession = $session
+        $script:CimArgs    = @{ CimSession = $session }
+
+        Write-Host "  Connected to $target." -ForegroundColor Green
+    } catch {
+        Write-Host "  Connection failed: $_" -ForegroundColor Red
+    }
+    Pause-ForUser
+}
+
+function Disconnect-RemoteMachine {
+    if ($script:CimSession) { Remove-CimSession $script:CimSession -EA SilentlyContinue }
+    $script:Target     = ''
+    $script:Credential = $null
+    $script:CimSession = $null
+    $script:CimArgs    = @{}
+    Write-Host '  Disconnected. Operating on local machine.' -ForegroundColor Green
+    Pause-ForUser
 }
 
 # ═══════════════════════════════════════════════════════════════════
@@ -391,7 +492,6 @@ function Get-ActionFromUser {
 }
 
 function Get-PrincipalFromUser {
-    # Returns a hashtable: @{ Principal=...; [User=...]; [Password=...] }
     Write-Host "`n  Run as account:" -ForegroundColor Yellow
     Write-Host '   [1] SYSTEM            (no password, highest privilege)'
     Write-Host '   [2] NETWORK SERVICE   (limited network access)'
@@ -426,7 +526,7 @@ function Show-EnabledTasks {
     Write-Header 'Enabled Tasks'
     $kw = (Read-Host '  Filter keyword (blank = show all)').Trim()
     Write-Host '  Loading — fetching run info for each task, may take a moment...' -ForegroundColor DarkGray
-    $tasks = @(Get-ScheduledTask -EA SilentlyContinue | Where-Object {
+    $tasks = @(Get-ScheduledTask @script:CimArgs -EA SilentlyContinue | Where-Object {
         $_.State -eq 'Ready' -and (!$kw -or $_.TaskName -like "*$kw*" -or $_.TaskPath -like "*$kw*")
     })
     Show-TaskListPaged -Tasks $tasks -Rows (Get-TaskRows -Tasks $tasks -WithInfo)
@@ -436,7 +536,7 @@ function Show-DisabledTasks {
     Write-Header 'Disabled Tasks'
     $kw = (Read-Host '  Filter keyword (blank = show all)').Trim()
     Write-Host '  Loading — fetching run info for each task, may take a moment...' -ForegroundColor DarkGray
-    $tasks = @(Get-ScheduledTask -EA SilentlyContinue | Where-Object {
+    $tasks = @(Get-ScheduledTask @script:CimArgs -EA SilentlyContinue | Where-Object {
         $_.State -eq 'Disabled' -and (!$kw -or $_.TaskName -like "*$kw*" -or $_.TaskPath -like "*$kw*")
     })
     Show-TaskListPaged -Tasks $tasks -Rows (Get-TaskRows -Tasks $tasks -WithInfo)
@@ -446,7 +546,7 @@ function Show-RunningTasks {
     do {
         Write-Header 'Running Tasks'
         $kw = (Read-Host '  Filter keyword (blank = show all)').Trim()
-        $tasks = @(Get-ScheduledTask -EA SilentlyContinue | Where-Object {
+        $tasks = @(Get-ScheduledTask @script:CimArgs -EA SilentlyContinue | Where-Object {
             $_.State -eq 'Running' -and (!$kw -or $_.TaskName -like "*$kw*" -or $_.TaskPath -like "*$kw*")
         })
         Show-TaskListPaged -Tasks $tasks -Rows (Get-TaskRows -Tasks $tasks)
@@ -456,7 +556,7 @@ function Show-RunningTasks {
 }
 
 # ═══════════════════════════════════════════════════════════════════
-#  4-6  ENABLE / DISABLE / DELETE
+# 4-10 ENABLE / DISABLE / DELETE / STOP
 # ═══════════════════════════════════════════════════════════════════
 
 function Invoke-EnableTask {
@@ -467,7 +567,7 @@ function Invoke-EnableTask {
     Write-Host "`n  $($t.TaskPath)$($t.TaskName)  [$($t.State)]" -ForegroundColor Yellow
     if ((Read-Valid 'Enable this task? [Y/N]' @('Y','y','N','n')) -in 'Y','y') {
         try {
-            Enable-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath | Out-Null
+            Enable-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath @script:CimArgs | Out-Null
             Write-Host '  Task enabled.' -ForegroundColor Green
         } catch { Write-Host "  Error: $_" -ForegroundColor Red }
     } else { Write-Host '  Cancelled.' -ForegroundColor Gray }
@@ -482,7 +582,7 @@ function Invoke-DisableTask {
     Write-Host "`n  $($t.TaskPath)$($t.TaskName)  [$($t.State)]" -ForegroundColor Yellow
     if ((Read-Valid 'Disable this task? [Y/N]' @('Y','y','N','n')) -in 'Y','y') {
         try {
-            Disable-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath | Out-Null
+            Disable-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath @script:CimArgs | Out-Null
             Write-Host '  Task disabled.' -ForegroundColor Green
         } catch { Write-Host "  Error: $_" -ForegroundColor Red }
     } else { Write-Host '  Cancelled.' -ForegroundColor Gray }
@@ -501,7 +601,7 @@ function Invoke-DeleteTask {
 
     if ($confirm -ceq 'DELETE') {
         try {
-            Unregister-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath -Confirm:$false
+            Unregister-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath -Confirm:$false @script:CimArgs
             Write-Host '  Task deleted.' -ForegroundColor Green
         } catch { Write-Host "  Error: $_" -ForegroundColor Red }
     } else { Write-Host '  Cancelled.' -ForegroundColor Gray }
@@ -519,31 +619,29 @@ function Show-TaskHistory {
     $taskFullPath = $t.TaskPath + $t.TaskName
 
     $categoryMap = @{
-        100 = 'Task Started'
-        101 = 'Task Start Failed'
-        102 = 'Task completed'
-        103 = 'Action failed'
-        106 = 'Task registered'
-        107 = 'Task triggered on schedule'
-        110 = 'Task triggered by user'
-        111 = 'Task terminated'
-        119 = 'Task triggered on idle'
-        129 = 'Created Task Process'
-        140 = 'Task registration updated'
-        141 = 'Task deleted'
-        200 = 'Action started'
-        201 = 'Action completed'
-        202 = 'Action failed to start'
-        203 = 'Action completed (failed)'
-        330 = 'Task stopping due to user request'
-        331 = 'Task stopping'
+        100 = 'Task Started';          101 = 'Task Start Failed'
+        102 = 'Task completed';        103 = 'Action failed'
+        106 = 'Task registered';       107 = 'Task triggered on schedule'
+        110 = 'Task triggered by user';111 = 'Task terminated'
+        119 = 'Task triggered on idle';129 = 'Created Task Process'
+        140 = 'Task registration updated'; 141 = 'Task deleted'
+        200 = 'Action started';        201 = 'Action completed'
+        202 = 'Action failed to start';203 = 'Action completed (failed)'
+        330 = 'Task stopping due to user request'; 331 = 'Task stopping'
     }
 
     try {
-        $allEvents = Get-WinEvent -FilterHashtable @{
-            LogName = 'Microsoft-Windows-TaskScheduler/Operational'
-            Id      = @(100,101,102,103,106,107,110,111,119,129,140,141,200,201,202,203,330,331)
-        } -EA Stop | Where-Object {
+        $evtParams = @{
+            FilterHashtable = @{
+                LogName = 'Microsoft-Windows-TaskScheduler/Operational'
+                Id      = @(100,101,102,103,106,107,110,111,119,129,140,141,200,201,202,203,330,331)
+            }
+            ErrorAction = 'Stop'
+        }
+        if ($script:Target) { $evtParams.ComputerName = $script:Target }
+        if ($script:Target -and $script:Credential) { $evtParams.Credential = $script:Credential }
+
+        $allEvents = Get-WinEvent @evtParams | Where-Object {
             $_.Properties.Count -gt 0 -and $_.Properties[0].Value -eq $taskFullPath
         } | Select-Object -First 500
 
@@ -593,7 +691,7 @@ function Show-TaskHistory {
 
 function Invoke-StopTask {
     Write-Header 'Stop a Running Task'
-    $running = @(Get-ScheduledTask -EA SilentlyContinue | Where-Object State -eq 'Running')
+    $running = @(Get-ScheduledTask @script:CimArgs -EA SilentlyContinue | Where-Object State -eq 'Running')
 
     if ($running.Count -eq 0) {
         Write-Host '  No tasks are currently running.' -ForegroundColor Yellow
@@ -617,7 +715,7 @@ function Invoke-StopTask {
     Write-Host "`n  $($t.TaskPath)$($t.TaskName)" -ForegroundColor Yellow
     if ((Read-Valid 'Stop this task? [Y/N]' @('Y','y','N','n')) -in 'Y','y') {
         try {
-            Stop-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath
+            Stop-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath @script:CimArgs
             Write-Host '  Task stopped.' -ForegroundColor Green
         } catch { Write-Host "  Error: $_" -ForegroundColor Red }
     } else { Write-Host '  Cancelled.' -ForegroundColor Gray }
@@ -625,14 +723,13 @@ function Invoke-StopTask {
 }
 
 # ═══════════════════════════════════════════════════════════════════
-#  7  CREATE WIZARD
+# 11 CREATE WIZARD
 # ═══════════════════════════════════════════════════════════════════
 
 function New-TaskWizard {
     Write-Header 'Create a New Task'
     Write-Host '  Type B and Enter at any prompt to cancel.' -ForegroundColor DarkGray
 
-    # ── Identity ────────────────────────────────────────────────────
     $name = (Read-Host "`n  Task name").Trim()
     if (!$name -or $name -in 'B','b') { return }
 
@@ -644,25 +741,20 @@ function New-TaskWizard {
 
     $desc = (Read-Host '  Description (optional)').Trim()
 
-    # ── Trigger ──────────────────────────────────────────────────────
     $trigger = Get-TriggerFromUser
     if (!$trigger) { Write-Host '  Cancelled.' -ForegroundColor Gray; Pause-ForUser; return }
 
-    # ── Action ───────────────────────────────────────────────────────
     $action = Get-ActionFromUser
     if (!$action) { Write-Host '  Cancelled.' -ForegroundColor Gray; Pause-ForUser; return }
 
-    # ── Run As ───────────────────────────────────────────────────────
     $pi = Get-PrincipalFromUser
     if (!$pi) { Write-Host '  Cancelled.' -ForegroundColor Gray; Pause-ForUser; return }
 
-    # ── Settings (sensible defaults) ─────────────────────────────────
     $settings = New-ScheduledTaskSettingsSet `
         -ExecutionTimeLimit (New-TimeSpan -Hours 1) `
         -MultipleInstances  IgnoreNew `
         -StartWhenAvailable
 
-    # ── Review ───────────────────────────────────────────────────────
     Clear-Host
     Write-Host '  ── Review ─────────────────────────────────────────────' -ForegroundColor Cyan
     Write-Host "  Name        : $name"
@@ -679,7 +771,6 @@ function New-TaskWizard {
         Write-Host '  Cancelled.' -ForegroundColor Gray; Pause-ForUser; return
     }
 
-    # ── Register ─────────────────────────────────────────────────────
     try {
         $def = New-ScheduledTask -Action $action -Trigger $trigger -Principal $pi.Principal -Settings $settings
 
@@ -687,15 +778,13 @@ function New-TaskWizard {
         if ($pi.User)     { $reg.User     = $pi.User }
         if ($pi.Password) { $reg.Password = $pi.Password }
 
-        Register-ScheduledTask @reg -EA Stop | Out-Null
+        Register-ScheduledTask @reg @script:CimArgs -EA Stop | Out-Null
 
         if ($desc) {
-            $svc = New-Object -ComObject 'Schedule.Service'
-            $svc.Connect()
+            $svc = New-ComService
             $fp  = if ($folder -eq '\') { '\' } else { $folder.TrimEnd('\') }
             $def = $svc.GetFolder($fp).GetTask($name).Definition
             $def.RegistrationInfo.Description = $desc
-            # Pass credentials through — required when task runs as a stored-password user account
             $descLogon = $def.Principal.LogonType
             $descUser  = $def.Principal.UserId
             $descPw    = if ($pi.Password) { $pi.Password } else { $null }
@@ -710,7 +799,7 @@ function New-TaskWizard {
 }
 
 # ═══════════════════════════════════════════════════════════════════
-#  8  EDIT WIZARD
+# 12 EDIT WIZARD
 # ═══════════════════════════════════════════════════════════════════
 
 function Edit-TaskWizard {
@@ -756,8 +845,8 @@ function Edit-TaskWizard {
                 $newTrigger = Get-TriggerFromUser
                 if ($newTrigger) {
                     try {
-                        Set-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath -Trigger $newTrigger | Out-Null
-                        $t = Get-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath
+                        Set-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath -Trigger $newTrigger @script:CimArgs | Out-Null
+                        $t = Get-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath @script:CimArgs
                         Write-Host '  Trigger updated.' -ForegroundColor Green
                     } catch { Write-Host "  Error: $_" -ForegroundColor Red }
                     Pause-ForUser
@@ -767,8 +856,8 @@ function Edit-TaskWizard {
                 $newAction = Get-ActionFromUser
                 if ($newAction) {
                     try {
-                        Set-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath -Action $newAction | Out-Null
-                        $t = Get-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath
+                        Set-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath -Action $newAction @script:CimArgs | Out-Null
+                        $t = Get-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath @script:CimArgs
                         Write-Host '  Action updated.' -ForegroundColor Green
                     } catch { Write-Host "  Error: $_" -ForegroundColor Red }
                     Pause-ForUser
@@ -781,8 +870,8 @@ function Edit-TaskWizard {
                         $params = @{ TaskName = $t.TaskName; TaskPath = $t.TaskPath; Principal = $pi.Principal }
                         if ($pi.User)     { $params.User     = $pi.User }
                         if ($pi.Password) { $params.Password = $pi.Password }
-                        Set-ScheduledTask @params | Out-Null
-                        $t = Get-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath
+                        Set-ScheduledTask @params @script:CimArgs | Out-Null
+                        $t = Get-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath @script:CimArgs
                         Write-Host '  Run-as account updated.' -ForegroundColor Green
                     } catch { Write-Host "  Error: $_" -ForegroundColor Red }
                     Pause-ForUser
@@ -791,8 +880,7 @@ function Edit-TaskWizard {
             '4' {
                 $newDesc = (Read-Host '  New description (blank to clear)').Trim()
                 try {
-                    $svc = New-Object -ComObject 'Schedule.Service'
-                    $svc.Connect()
+                    $svc = New-ComService
                     $fp  = if ($t.TaskPath -eq '\') { '\' } else { $t.TaskPath.TrimEnd('\') }
                     $def = $svc.GetFolder($fp).GetTask($t.TaskName).Definition
                     $def.RegistrationInfo.Description = $newDesc
@@ -800,7 +888,6 @@ function Edit-TaskWizard {
                     $userId    = $def.Principal.UserId
                     $logonType = $def.Principal.LogonType
                     $password  = $null
-                    # LogonType 1 = Password, 6 = InteractiveTokenOrPassword — both require credentials
                     if ($logonType -in 1, 6) {
                         Write-Host "  Task runs as '$userId' with a stored password." -ForegroundColor DarkGray
                         $secpw    = Read-Host '  Enter password to save changes' -AsSecureString
@@ -809,7 +896,7 @@ function Edit-TaskWizard {
                     }
 
                     $svc.GetFolder($fp).RegisterTaskDefinition($t.TaskName, $def, 4, $userId, $password, $logonType) | Out-Null
-                    $t = Get-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath
+                    $t = Get-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath @script:CimArgs
                     Write-Host '  Description updated.' -ForegroundColor Green
                 } catch { Write-Host "  Error: $_" -ForegroundColor Red }
                 Pause-ForUser
@@ -826,15 +913,10 @@ function Edit-TaskWizard {
                 $h = [Math]::Max(0, $h)
                 $m = [Math]::Max(0, [Math]::Min(59, $m))
                 try {
-                    $svc = New-Object -ComObject 'Schedule.Service'
-                    $svc.Connect()
+                    $svc = New-ComService
                     $fp  = if ($t.TaskPath -eq '\') { '\' } else { $t.TaskPath.TrimEnd('\') }
                     $def = $svc.GetFolder($fp).GetTask($t.TaskName).Definition
-                    $def.Settings.ExecutionTimeLimit = if ($h -eq 0 -and $m -eq 0) {
-                        'PT0S'
-                    } else {
-                        "PT${h}H${m}M"
-                    }
+                    $def.Settings.ExecutionTimeLimit = if ($h -eq 0 -and $m -eq 0) { 'PT0S' } else { "PT${h}H${m}M" }
                     $userId    = $def.Principal.UserId
                     $logonType = $def.Principal.LogonType
                     $password  = $null
@@ -846,7 +928,7 @@ function Edit-TaskWizard {
                     }
                     $svc.GetFolder($fp).RegisterTaskDefinition(
                         $t.TaskName, $def, 4, $userId, $password, $logonType) | Out-Null
-                    $t = Get-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath
+                    $t = Get-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath @script:CimArgs
                     $display = if ($h -eq 0 -and $m -eq 0) { 'unlimited' } else { "${h}h ${m}m" }
                     Write-Host "  Execution time limit set to $display." -ForegroundColor Green
                 } catch { Write-Host "  Error: $_" -ForegroundColor Red }
@@ -868,7 +950,7 @@ function Invoke-RunTask {
     Write-Host "`n  $($t.TaskPath)$($t.TaskName)  [$($t.State)]" -ForegroundColor Yellow
     if ((Read-Valid 'Run this task now? [Y/N]' @('Y','y','N','n')) -in 'Y','y') {
         try {
-            Start-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath
+            Start-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath @script:CimArgs
             Write-Host '  Task started.' -ForegroundColor Green
         } catch { Write-Host "  Error: $_" -ForegroundColor Red }
     } else { Write-Host '  Cancelled.' -ForegroundColor Gray }
@@ -886,7 +968,7 @@ function Export-TaskToXml {
     if (!$path) { $path = $default }
 
     try {
-        Export-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath |
+        Export-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath @script:CimArgs |
             Out-File -FilePath $path -Encoding UTF8
         Write-Host "  Exported to: $path" -ForegroundColor Green
     } catch { Write-Host "  Error: $_" -ForegroundColor Red }
@@ -910,25 +992,17 @@ function Import-TaskFromXml {
     if (!$folder.StartsWith('\')) { $folder = "\$folder" }
     if ($folder -ne '\' -and !$folder.EndsWith('\')) { $folder = "$folder\" }
 
-    # Parse XML to detect whether the task uses stored user credentials.
-    # LogonType 'Password'(1) and 'InteractiveTokenOrPassword'(6) require a password at registration.
     try { $xmlDoc = [xml]$xmlText } catch {
         Write-Host "  Invalid XML: $_" -ForegroundColor Red; Pause-ForUser; return
     }
-    $ns          = @{ ts = 'http://schemas.microsoft.com/windows/2004/02/mit/task' }
-    $ltNode      = Select-Xml -Xml $xmlDoc -XPath '//ts:LogonType' -Namespace $ns
+    $ns           = @{ ts = 'http://schemas.microsoft.com/windows/2004/02/mit/task' }
+    $ltNode       = Select-Xml -Xml $xmlDoc -XPath '//ts:LogonType' -Namespace $ns
     $logonTypeStr = if ($ltNode) { $ltNode.Node.InnerText } else { 'Interactive' }
-    $uidNode     = Select-Xml -Xml $xmlDoc -XPath '//ts:UserId'    -Namespace $ns
-    $userId      = if ($uidNode) { $uidNode.Node.InnerText } else { '' }
+    $uidNode      = Select-Xml -Xml $xmlDoc -XPath '//ts:UserId'    -Namespace $ns
+    $userId       = if ($uidNode) { $uidNode.Node.InnerText } else { '' }
 
-    # Map XML string to COM enum value
     $logonTypeMap = @{
-        'Password'                   = 1
-        'S4U'                        = 2
-        'InteractiveToken'           = 3
-        'Group'                      = 4
-        'ServiceAccount'             = 5
-        'InteractiveTokenOrPassword' = 6
+        'Password'=1; 'S4U'=2; 'InteractiveToken'=3; 'Group'=4; 'ServiceAccount'=5; 'InteractiveTokenOrPassword'=6
     }
     $logonTypeNum = if ($logonTypeMap.ContainsKey($logonTypeStr)) { $logonTypeMap[$logonTypeStr] } else { 3 }
     $needsCreds   = $logonTypeStr -in 'Password', 'InteractiveTokenOrPassword'
@@ -939,13 +1013,11 @@ function Import-TaskFromXml {
             $secpw    = Read-Host '  Enter password for this account' -AsSecureString
             $password = [Runtime.InteropServices.Marshal]::PtrToStringBSTR(
                             [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secpw))
-            $svc = New-Object -ComObject 'Schedule.Service'
-            $svc.Connect()
-            $fp = if ($folder -eq '\') { '\' } else { $folder.TrimEnd('\') }
-            # RegisterTask(path, xml, flags=6 CREATE_OR_UPDATE, userId, password, logonType, sddl)
+            $svc = New-ComService
+            $fp  = if ($folder -eq '\') { '\' } else { $folder.TrimEnd('\') }
             $svc.GetFolder($fp).RegisterTask($name, $xmlText, 6, $userId, $password, $logonTypeNum, $null) | Out-Null
         } else {
-            Register-ScheduledTask -TaskName $name -TaskPath $folder -Xml $xmlText -EA Stop | Out-Null
+            Register-ScheduledTask -TaskName $name -TaskPath $folder -Xml $xmlText @script:CimArgs -EA Stop | Out-Null
         }
         Write-Host "  Task '$name' imported successfully." -ForegroundColor Green
     } catch { Write-Host "  Error: $_" -ForegroundColor Red }
@@ -966,8 +1038,6 @@ function Invoke-CloneTask {
     if (!$folder.StartsWith('\')) { $folder = "\$folder" }
     if ($folder -ne '\' -and !$folder.EndsWith('\')) { $folder = "$folder\" }
 
-    # CIM may return LogonType as a string name ('Password') or an integer ('1') depending on
-    # the Windows version — resolve to a numeric value so the credential check is always reliable.
     $ltRaw = "$($t.Principal.LogonType)"
     $ltMap = @{ 'None'=0; 'Password'=1; 'S4U'=2; 'InteractiveToken'=3; 'Group'=4; 'ServiceAccount'=5; 'InteractiveTokenOrPassword'=6 }
     $logonTypeNum = 0
@@ -977,19 +1047,18 @@ function Invoke-CloneTask {
     $needsCreds = $logonTypeNum -in 1, 6
 
     try {
-        $xmlText = Export-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath
+        $xmlText = Export-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath @script:CimArgs
         if ($needsCreds) {
             $userId   = $t.Principal.UserId
             Write-Host "  Task runs as '$userId' with stored credentials." -ForegroundColor DarkGray
             $secpw    = Read-Host '  Enter password for this account' -AsSecureString
             $password = [Runtime.InteropServices.Marshal]::PtrToStringBSTR(
                             [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secpw))
-            $svc = New-Object -ComObject 'Schedule.Service'
-            $svc.Connect()
-            $fp = if ($folder -eq '\') { '\' } else { $folder.TrimEnd('\') }
+            $svc = New-ComService
+            $fp  = if ($folder -eq '\') { '\' } else { $folder.TrimEnd('\') }
             $svc.GetFolder($fp).RegisterTask($newName, $xmlText, 6, $userId, $password, $logonTypeNum, $null) | Out-Null
         } else {
-            Register-ScheduledTask -TaskName $newName -TaskPath $folder -Xml $xmlText -EA Stop | Out-Null
+            Register-ScheduledTask -TaskName $newName -TaskPath $folder -Xml $xmlText @script:CimArgs -EA Stop | Out-Null
         }
         Write-Host "  Task cloned as '$newName' in $folder." -ForegroundColor Green
     } catch { Write-Host "  Error: $_" -ForegroundColor Red }
@@ -1001,17 +1070,17 @@ function Invoke-CloneTask {
 # ═══════════════════════════════════════════════════════════════════
 
 function Invoke-BulkToggle {
-    param([string]$TargetState)   # 'Ready' = enable, 'Disabled' = disable
+    param([string]$TargetState)
 
-    $verb      = if ($TargetState -eq 'Ready') { 'enable'             } else { 'disable'              }
-    $title     = if ($TargetState -eq 'Ready') { 'Bulk Enable Tasks'  } else { 'Bulk Disable Tasks'   }
-    $fromState = if ($TargetState -eq 'Ready') { 'Disabled'           } else { 'Ready'                }
+    $verb      = if ($TargetState -eq 'Ready') { 'enable'            } else { 'disable'             }
+    $title     = if ($TargetState -eq 'Ready') { 'Bulk Enable Tasks' } else { 'Bulk Disable Tasks'  }
+    $fromState = if ($TargetState -eq 'Ready') { 'Disabled'          } else { 'Ready'               }
 
     Write-Header $title
     $kw = (Read-Host '  Filter keyword (blank = show all)').Trim()
     Write-Host '  Searching...' -ForegroundColor DarkGray
 
-    $found = @(Get-ScheduledTask -EA SilentlyContinue | Where-Object {
+    $found = @(Get-ScheduledTask @script:CimArgs -EA SilentlyContinue | Where-Object {
         $_.State -eq $fromState -and (!$kw -or $_.TaskName -like "*$kw*" -or $_.TaskPath -like "*$kw*")
     })
 
@@ -1060,9 +1129,9 @@ function Invoke-BulkToggle {
         $task = $found[$idx - 1]
         try {
             if ($TargetState -eq 'Ready') {
-                Enable-ScheduledTask  -TaskName $task.TaskName -TaskPath $task.TaskPath | Out-Null
+                Enable-ScheduledTask  -TaskName $task.TaskName -TaskPath $task.TaskPath @script:CimArgs | Out-Null
             } else {
-                Disable-ScheduledTask -TaskName $task.TaskName -TaskPath $task.TaskPath | Out-Null
+                Disable-ScheduledTask -TaskName $task.TaskName -TaskPath $task.TaskPath @script:CimArgs | Out-Null
             }
             $ok++
         } catch {
@@ -1087,7 +1156,7 @@ function Show-RunAsAudit {
     $kw = (Read-Host '  Filter keyword (blank = all tasks)').Trim()
     Write-Host '  Loading tasks...' -ForegroundColor DarkGray
 
-    $tasks = @(Get-ScheduledTask -EA SilentlyContinue | Where-Object {
+    $tasks = @(Get-ScheduledTask @script:CimArgs -EA SilentlyContinue | Where-Object {
         !$kw -or $_.TaskName -like "*$kw*" -or $_.TaskPath -like "*$kw*"
     })
 
@@ -1113,6 +1182,34 @@ function Show-RunAsAudit {
 }
 
 # ═══════════════════════════════════════════════════════════════════
+# AUTO-CONNECT (if -ComputerName was supplied at launch)
+# ═══════════════════════════════════════════════════════════════════
+
+if ($ComputerName) {
+    Write-Host "  Connecting to $ComputerName..." -ForegroundColor DarkGray
+    try {
+        $sessionParams = @{ ComputerName = $ComputerName; ErrorAction = 'Stop' }
+        $session = $null
+        try {
+            $sessionParams.SessionOption = New-CimSessionOption -Protocol Wsman
+            $session = New-CimSession @sessionParams
+        } catch {
+            Write-Host '  WsMan/WinRM failed, trying DCOM...' -ForegroundColor DarkGray
+            $sessionParams.SessionOption = New-CimSessionOption -Protocol Dcom
+            $session = New-CimSession @sessionParams
+        }
+        $script:Target     = $ComputerName
+        $script:CimSession = $session
+        $script:CimArgs    = @{ CimSession = $session }
+        Write-Host "  Connected to $ComputerName." -ForegroundColor Green
+        Start-Sleep -Seconds 1
+    } catch {
+        Write-Warning "Could not connect to '$ComputerName': $_"
+        Start-Sleep -Seconds 2
+    }
+}
+
+# ═══════════════════════════════════════════════════════════════════
 #  MAIN MENU LOOP
 # ═══════════════════════════════════════════════════════════════════
 
@@ -1125,52 +1222,57 @@ do {
     Write-Host '   [3]  Running tasks'
     Write-Host
     Write-Host '  MANAGE' -ForegroundColor DarkCyan
-    Write-Host '   [4]  Enable a task'
-    Write-Host '   [5]  Disable a task'
-    Write-Host '   [6]  Bulk enable tasks'
+    Write-Host '   [4]  Enable a task          [8]  Run a task now'
+    Write-Host '   [5]  Disable a task         [9]  Stop a running task'
+    Write-Host '   [6]  Bulk enable tasks      [10] Delete a task'
     Write-Host '   [7]  Bulk disable tasks'
-    Write-Host '   [8]  Run a task now'
-    Write-Host '   [9]  Stop a running task'
-    Write-Host '   [10] Delete a task'
     Write-Host
     Write-Host '  CONFIGURE' -ForegroundColor DarkCyan
-    Write-Host '   [11] Create a task'
-    Write-Host '   [12] Edit a task'
+    Write-Host '   [11] Create a task          [14] Export task to XML'
+    Write-Host '   [12] Edit a task            [15] Import task from XML'
     Write-Host '   [13] Clone / copy a task'
-    Write-Host '   [14] Export task to XML'
-    Write-Host '   [15] Import task from XML'
     Write-Host
     Write-Host '  INSPECT' -ForegroundColor DarkCyan
     Write-Host '   [16] Run history'
     Write-Host '   [17] Run-as account audit'
     Write-Host
+    Write-Host '  REMOTE' -ForegroundColor DarkCyan
+    if ($script:Target) {
+        Write-Host "   [18] Remote connection     (connected: $script:Target)" -ForegroundColor Yellow
+    } else {
+        Write-Host '   [18] Connect to remote machine'
+    }
+    Write-Host
     Write-Host '   [Q]  Quit'
     Write-Host
 
-    $choice = Read-Valid 'Choice [1-17 or Q]' @(
+    $choice = Read-Valid 'Choice [1-18 or Q]' @(
         '1','2','3','4','5','6','7','8','9','10',
-        '11','12','13','14','15','16','17','Q','q'
+        '11','12','13','14','15','16','17','18','Q','q'
     )
 
     switch ($choice) {
-        '1'  { Show-EnabledTasks   }
-        '2'  { Show-DisabledTasks  }
-        '3'  { Show-RunningTasks   }
-        '4'  { Invoke-EnableTask   }
-        '5'  { Invoke-DisableTask  }
-        '6'  { Invoke-BulkEnable   }
-        '7'  { Invoke-BulkDisable  }
-        '8'  { Invoke-RunTask      }
-        '9'  { Invoke-StopTask     }
-        '10' { Invoke-DeleteTask   }
-        '11' { New-TaskWizard      }
-        '12' { Edit-TaskWizard     }
-        '13' { Invoke-CloneTask    }
-        '14' { Export-TaskToXml    }
-        '15' { Import-TaskFromXml  }
-        '16' { Show-TaskHistory    }
-        '17' { Show-RunAsAudit     }
+        '1'  { Show-EnabledTasks     }
+        '2'  { Show-DisabledTasks    }
+        '3'  { Show-RunningTasks     }
+        '4'  { Invoke-EnableTask     }
+        '5'  { Invoke-DisableTask    }
+        '6'  { Invoke-BulkEnable     }
+        '7'  { Invoke-BulkDisable    }
+        '8'  { Invoke-RunTask        }
+        '9'  { Invoke-StopTask       }
+        '10' { Invoke-DeleteTask     }
+        '11' { New-TaskWizard        }
+        '12' { Edit-TaskWizard       }
+        '13' { Invoke-CloneTask      }
+        '14' { Export-TaskToXml      }
+        '15' { Import-TaskFromXml    }
+        '16' { Show-TaskHistory      }
+        '17' { Show-RunAsAudit       }
+        '18' { Connect-RemoteMachine }
     }
 } while ($choice -notin 'Q', 'q')
+
+if ($script:CimSession) { Remove-CimSession $script:CimSession -EA SilentlyContinue }
 
 Write-Host "`n  Goodbye.`n" -ForegroundColor DarkGray
